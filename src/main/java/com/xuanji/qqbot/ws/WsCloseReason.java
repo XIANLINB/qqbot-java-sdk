@@ -15,5 +15,7 @@ public enum WsCloseReason {
     /** Socket 错误 */
     SOCKET_ERROR,
     /** Socket 关闭 */
-    SOCKET_CLOSED
+    SOCKET_CLOSED,
+    /** READY 等待超时（Hello/Identify 无响应） */
+    READY_TIMEOUT
 }

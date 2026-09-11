@@ -34,6 +34,11 @@ public record GroupAddRobot(
         return groupId;
     }
 
+    @Override
+    public String memberOpenid() {
+        return opMemberOpenid;
+    }
+
     /**
      * @return 操作者（拉机器人进群的人）
      */

@@ -15,11 +15,12 @@ import java.lang.annotation.Target;
  * {@link CommandMatchType#EXACT 精确} /
  * {@link CommandMatchType#REGEX 正则}。
  * <pre>
- * &#64;Command(type = CommandMatchType.PREFIX, value = "地图工坊")
+ * &#64;Command(type = CommandMatchType.PREFIX, value = "地图工坊", at = At.REQUIRED)
  * &#64;Command(type = CommandMatchType.EXACT, value = "你好")
- * &#64;Command(type = CommandMatchType.SUFFIX, value = "！")
- * &#64;Command(type = CommandMatchType.REGEX, value = "签到\\d+")
+ * &#64;Command(type = CommandMatchType.REGEX, value = "签到\\d+", at = At.REQUIRED)
  * </pre>
+ * {@link #at()} 仅对群消息事件生效；单聊等事件上声明会被忽略并告警。
+ * 方法返回 String 时自动作为回复发送（见 XuanjiListenerRegistrar）。
  */
 @Target(ElementType.METHOD)
 @Retention(RetentionPolicy.RUNTIME)
@@ -40,6 +41,13 @@ public @interface Command {
      * 是否忽略大小写，默认 true。
      */
     boolean ignoreCase() default true;
+
+    /**
+     * 对「@ 机器人」的要求，默认 {@link At#ANY}（不关心）。
+     * 群全量模式下（GROUP_MESSAGE_CREATE）建议显式 {@link At#REQUIRED}，
+     * 否则任何人说相关的话都会触发。
+     */
+    At at() default At.ANY;
 
     /**
      * 容器注解（勿手写）。

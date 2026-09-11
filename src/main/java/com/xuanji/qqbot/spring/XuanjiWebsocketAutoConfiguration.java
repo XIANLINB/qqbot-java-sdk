@@ -1,85 +1,41 @@
 package com.xuanji.qqbot.spring;
 
-import com.xuanji.qqbot.Bot;
-import com.xuanji.qqbot.event.Events;
 import com.xuanji.qqbot.event.Intents;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.context.annotation.Import;
 
 import java.util.HashMap;
-import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
 /**
- * xuanji.websocket.enable=true 时装配 Bot 并启动网关。
+ * WebSocket 模式：为注册表中全部 websocket 机器人建立网关连接。
  */
 @Configuration(proxyBeanMethods = false)
-@EnableConfigurationProperties(XuanjiProperties.class)
-@ConditionalOnProperty(prefix = "xuanji", name = "websocket.enable", havingValue = "true")
+@ConditionalOnProperty(prefix = "xuanji", name = "websocket.enable", havingValue = "true", matchIfMissing = true)
 public class XuanjiWebsocketAutoConfiguration {
-    private static final Logger log = LoggerFactory.getLogger(XuanjiWebsocketAutoConfiguration.class);
 
     /**
-     * @param props 配置
-     * @return Bot
-     */
-    @Bean(name = "xuanjiQqBot", destroyMethod = "close")
-    @ConditionalOnMissingBean(Bot.class)
-    public Bot xuanjiQqBot(XuanjiProperties props) {
-        String appId = props.resolveAppId(true);
-        String secret = props.resolveAppSecret(true);
-        if (appId.isBlank() || secret.isBlank()) {
-            throw new IllegalStateException(
-                    "xuanji.websocket.app-id / app-secret 未配置，或未设置 QQBOT_APP_ID / QQBOT_APP_SECRET");
-        }
-        log.info("[xuanji] 创建 Bot（websocket）appId={}", mask(appId));
-        return Bot.builder().appId(appId).appSecret(secret).build();
-    }
-
-    /**
-     * @param bot Bot
-     * @return Events
+     * 启动时连接全部 websocket 机器人。
+     *
+     * @param registry 注册表
+     * @param props    配置
+     * @return 生命周期
      */
     @Bean
-    @ConditionalOnMissingBean(Events.class)
-    public Events xuanjiEvents(Bot bot) {
-        return bot.events();
-    }
-
-    /**
-     * @param props 配置
-     * @param bot   客户端
-     * @return 启动器
-     */
-    @Bean
-    public XuanjiWsLifecycle xuanjiWsLifecycle(XuanjiProperties props, Bot bot) {
-        return new XuanjiWsLifecycle(bot, resolveIntents(props));
+    public XuanjiWsLifecycle xuanjiWsLifecycle(BotRegistry registry, XuanjiProperties props) {
+        return new XuanjiWsLifecycle(registry, props);
     }
 
     /**
      * yml intents 名 → 官方位。
      *
-     * @param props 配置
-     * @return 组合 intents
-     */
-    /**
-     * 解析 WebSocket intents。
-     * yml 未配置时默认订阅 SDK 支持的全部事件（单聊+群聊+互动）。
-     *
-     * @param props 配置
+     * @param names 订阅名列表，空则默认 SDK 全部支持事件
      * @return intents 位掩码
      */
-    public static long resolveIntents(XuanjiProperties props) {
-        List<String> names = props.getWebsocket().getIntents();
+    public static long resolveIntents(java.util.List<String> names) {
         if (names == null || names.isEmpty()) {
-            log.info("[xuanji] 未配置 intents，默认订阅 SDK 全部事件: {}", Intents.groupC2cAndInteraction());
             return Intents.groupC2cAndInteraction();
         }
         Map<String, Long> map = new HashMap<>();

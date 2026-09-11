@@ -27,7 +27,9 @@ public record QqBotOptions(
         /** 事件回调执行器；null 表示在 WS/Webhook 收线程上直接执行 */
         Executor eventExecutor,
         /** 是否使用沙箱环境（预留，当前路径未切换） */
-        boolean sandbox
+        boolean sandbox,
+        /** 富媒体上传配置（超时/重试）；null 表示使用 {@link MediaSpec#defaults()} */
+        MediaSpec media
 ) {
     /** 官方 OpenAPI 默认域名 */
     public static final URI DEFAULT_BASE_URI = URI.create("https://api.bot.qq.com");
@@ -54,7 +56,8 @@ public record QqBotOptions(
                 Duration.ofSeconds(30),
                 Duration.ofSeconds(90),
                 null,
-                false
+                false,
+                MediaSpec.defaults()
         );
     }
 }

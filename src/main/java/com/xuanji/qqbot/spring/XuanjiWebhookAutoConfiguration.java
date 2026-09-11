@@ -1,49 +1,60 @@
 package com.xuanji.qqbot.spring;
 
-import com.xuanji.qqbot.Bot;
-import com.xuanji.qqbot.event.Events;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import jakarta.servlet.http.HttpServlet;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.web.servlet.ServletRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.context.annotation.Import;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.Set;
 
 /**
- * xuanji.webhook.enable=true 时装配 Bot（不连 WS），由 {@link XuanjiWebhookController} 收回调。
+ * Webhook 模式：按每台 webhook 机器人的回调路径挂载入口 Servlet，
+ * 处理逻辑统一交给 {@link XuanjiWebhookController}（按 X-Bot-Appid 头路由到具体机器人）。
  */
 @Configuration(proxyBeanMethods = false)
-@EnableConfigurationProperties(XuanjiProperties.class)
-@Import(XuanjiWebhookController.class)
-@ConditionalOnProperty(prefix = "xuanji", name = "webhook.enable", havingValue = "true")
+@ConditionalOnProperty(prefix = "xuanji", name = "webhook.enable", havingValue = "true", matchIfMissing = true)
 public class XuanjiWebhookAutoConfiguration {
-    private static final Logger log = LoggerFactory.getLogger(XuanjiWebhookAutoConfiguration.class);
 
     /**
-     * @param props 配置
-     * @return Bot
+     * @param registry 多机器人注册表
+     * @return 处理器
      */
-    @Bean(name = "xuanjiQqBot", destroyMethod = "close")
-    @ConditionalOnMissingBean(Bot.class)
-    public Bot xuanjiQqBotWebhook(XuanjiProperties props) {
-        String appId = props.resolveAppId(false);
-        String secret = props.resolveAppSecret(false);
-        if (appId.isBlank() || secret.isBlank()) {
-            throw new IllegalStateException("xuanji.webhook.app-id / app-secret 未配置");
-        }
-        log.info("[xuanji] 创建 Bot（webhook）appId={}", XuanjiWebsocketAutoConfiguration.mask(appId));
-        return Bot.builder().appId(appId).appSecret(secret).build();
+    @Bean
+    public XuanjiWebhookController xuanjiWebhookController(BotRegistry registry) {
+        return new XuanjiWebhookController(registry);
     }
 
     /**
-     * @param bot Bot
-     * @return Events
+     * 将 webhook 处理器挂载到每台 webhook 机器人的回调路径（多台同路径自动去重）。
+     *
+     * @param controller 处理器
+     * @param registry   多机器人注册表
+     * @return Servlet 注册
      */
     @Bean
-    @ConditionalOnMissingBean(Events.class)
-    public Events xuanjiWebhookEvents(Bot bot) {
-        return bot.events();
+    public ServletRegistrationBean<HttpServlet> xuanjiWebhookServlet(XuanjiWebhookController controller,
+                                                                     BotRegistry registry) {
+        Set<String> paths = new LinkedHashSet<>();
+        for (BotRegistry.Entry e : registry.byMode("webhook")) {
+            if (e.path() != null && !e.path().isBlank()) {
+                paths.add(e.path());
+            }
+        }
+        HttpServlet servlet = new HttpServlet() {
+            @Override
+            protected void service(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+                controller.service(req, resp);
+            }
+        };
+        ServletRegistrationBean<HttpServlet> reg = new ServletRegistrationBean<>(servlet);
+        reg.setName("xuanjiWebhookServlet");
+        reg.setUrlMappings(new ArrayList<>(paths));
+        return reg;
     }
 }

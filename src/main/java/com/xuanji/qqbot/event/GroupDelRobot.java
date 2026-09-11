@@ -34,6 +34,11 @@ public record GroupDelRobot(
         return groupId;
     }
 
+    @Override
+    public String memberOpenid() {
+        return opMemberOpenid;
+    }
+
     /**
      * @return 操作者
      */

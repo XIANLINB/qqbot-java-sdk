@@ -89,7 +89,7 @@ public final class WebhookCodec {
     }
 
     /**
-     * 解析并分发事件。
+     * 解析并分发事件。原始完整信封随事件转交，由 Events 统一打印（受 logRawPayload 控制）。
      *
      * @param rawBody 原始 Body（须已验签）
      * @param events  事件总线
@@ -111,7 +111,7 @@ public final class WebhookCodec {
         String id = root.path("id").asText(null);
         JsonNode d = root.path("d");
         if (t != null) {
-            events.dispatchEnvelope(t, d, id);
+            events.dispatchEnvelope(t, d, id, root);
         }
         return t;
     }

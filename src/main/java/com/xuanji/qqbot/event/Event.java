@@ -43,4 +43,13 @@ public interface Event {
     default String userOpenid() {
         return null;
     }
+
+    /**
+     * 触发本事件的群成员 OpenID（如进群操作者、按钮点击者），无则 null。
+     *
+     * @return member_openid
+     */
+    default String memberOpenid() {
+        return null;
+    }
 }

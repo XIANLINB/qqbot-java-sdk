@@ -2,6 +2,7 @@ package com.xuanji.qqbot.api;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.xuanji.qqbot.MediaSpec;
 import com.xuanji.qqbot.exception.QqBotException;
 import com.xuanji.qqbot.exception.TransportException;
 import com.xuanji.qqbot.http.ApiCall;
@@ -37,6 +38,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 /**
  * 富媒体上传 OpenAPI。
@@ -55,17 +57,52 @@ public final class MediaApi {
     private static final int MD5_10M = 10002432;
 
     private final ApiCall api;
+    private final MediaSpec spec;
     private final HttpClient putClient;
 
     /**
      * @param api 已注入 token 的 OpenAPI 调用器
      */
     public MediaApi(ApiCall api) {
+        this(api, MediaSpec.defaults());
+    }
+
+    /**
+     * @param api  已注入 token 的 OpenAPI 调用器（应为富媒体专属超时的调用器）
+     * @param spec 富媒体上传配置：超时与重试
+     */
+    public MediaApi(ApiCall api, MediaSpec spec) {
         this.api = api;
+        this.spec = spec == null ? MediaSpec.defaults() : spec;
         this.putClient = HttpClient.newBuilder()
                 .followRedirects(HttpClient.Redirect.NORMAL)
-                .connectTimeout(Duration.ofSeconds(15))
+                .connectTimeout(this.spec.connectTimeout())
                 .build();
+    }
+
+    /**
+     * 网络类失败重试包装：仅 {@link TransportException}（连接失败/请求超时/IO）重试，
+     * 业务错误（有明确 err_code 的响应）直接抛出。
+     *
+     * @param action 动作名（日志用）
+     * @param call   实际调用
+     * @param <T>    返回类型
+     * @return 调用结果
+     */
+    private <T> T withRetry(String action, Supplier<T> call) {
+        int attempts = 1 + Math.max(0, spec.retry());
+        TransportException last = null;
+        for (int i = 0; i < attempts; i++) {
+            try {
+                return call.get();
+            } catch (TransportException e) {
+                last = e;
+                if (i < attempts - 1) {
+                    log.warn("[富媒体] {} 失败，进行第 {}/{} 次重试: {}", action, i + 1, attempts - 1, e.getMessage());
+                }
+            }
+        }
+        throw last;
     }
 
     /**
@@ -103,7 +140,7 @@ public final class MediaApi {
         if (fileName != null) {
             body.put("file_name", fileName);
         }
-        return api.post(filesPath(scope, openid), body, FileInfo.class);
+        return withRetry("URL上传", () -> api.post(filesPath(scope, openid), body, FileInfo.class));
     }
 
     // ---- Base64 本地上传 ----
@@ -128,7 +165,7 @@ public final class MediaApi {
         if (fileName != null && !fileName.isBlank()) {
             body.put("file_name", fileName);
         }
-        return api.post(filesPath(scope, openid), body, FileInfo.class);
+        return withRetry("Base64上传", () -> api.post(filesPath(scope, openid), body, FileInfo.class));
     }
 
     /**
@@ -240,7 +277,8 @@ public final class MediaApi {
         prepareBody.put("sha1", sha1Hex(data));
         prepareBody.put("md5_10m", md5HexPrefix(data, MD5_10M));
 
-        UploadPrepare prepare = api.post(uploadPreparePath(scope, openid), prepareBody, UploadPrepare.class);
+        UploadPrepare prepare = withRetry("分片准备",
+                () -> api.post(uploadPreparePath(scope, openid), prepareBody, UploadPrepare.class));
         if (prepare == null || prepare.uploadId() == null || prepare.uploadId().isBlank()) {
             throw new QqBotException("upload_prepare 未返回 upload_id");
         }
@@ -284,7 +322,7 @@ public final class MediaApi {
         mergeBody.put("srv_send_msg", false);
         mergeBody.put("file_name", name);
         mergeBody.put("upload_id", prepare.uploadId());
-        return api.post(filesPath(scope, openid), mergeBody, FileInfo.class);
+        return withRetry("分片合并", () -> api.post(filesPath(scope, openid), mergeBody, FileInfo.class));
     }
 
     private void finishPart(Scope scope, String openid, String uploadId, int index, long blockSize, String md5) {
@@ -293,29 +331,32 @@ public final class MediaApi {
         body.put("part_index", index);
         body.put("block_size", String.valueOf(blockSize));
         body.put("md5", md5);
-        api.post(uploadPartFinishPath(scope, openid), body, Object.class);
+        withRetry("分片完成", () -> api.post(uploadPartFinishPath(scope, openid), body, Object.class));
     }
 
     private void putPresigned(String url, byte[] data) {
         if (url == null || url.isBlank()) {
             throw new QqBotException("分片 presigned_url 为空");
         }
-        try {
-            HttpRequest req = HttpRequest.newBuilder(URI.create(url))
-                    .timeout(Duration.ofMinutes(5))
-                    .header("Content-Type", "application/octet-stream")
-                    .PUT(HttpRequest.BodyPublishers.ofByteArray(data))
-                    .build();
-            HttpResponse<Void> resp = putClient.send(req, HttpResponse.BodyHandlers.discarding());
-            if (resp.statusCode() >= 400) {
-                throw new QqBotException("分片 PUT 失败 HTTP " + resp.statusCode());
+        withRetry("分片直传", () -> {
+            try {
+                HttpRequest req = HttpRequest.newBuilder(URI.create(url))
+                        .timeout(spec.requestTimeout())
+                        .header("Content-Type", "application/octet-stream")
+                        .PUT(HttpRequest.BodyPublishers.ofByteArray(data))
+                        .build();
+                HttpResponse<Void> resp = putClient.send(req, HttpResponse.BodyHandlers.discarding());
+                if (resp.statusCode() >= 400) {
+                    throw new QqBotException("分片 PUT 失败 HTTP " + resp.statusCode());
+                }
+                return Boolean.TRUE;
+            } catch (IOException e) {
+                throw new TransportException("分片 PUT 失败", e);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new TransportException("分片 PUT 被中断");
             }
-        } catch (IOException e) {
-            throw new TransportException("分片 PUT 失败", e);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new TransportException("分片 PUT 被中断");
-        }
+        });
     }
 
     // ---- 路径 ----

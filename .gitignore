@@ -31,3 +31,6 @@ build/
 
 ### VS Code ###
 .vscode/
+
+# 本地官方文档摘要（不入库）
+docs/

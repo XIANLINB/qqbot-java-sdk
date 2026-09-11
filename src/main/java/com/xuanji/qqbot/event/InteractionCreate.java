@@ -58,6 +58,11 @@ public record InteractionCreate(
         return groupOpenid;
     }
 
+    @Override
+    public String memberOpenid() {
+        return groupMemberOpenid;
+    }
+
     /**
      * @return 是否需要响应（type=11/12）
      */

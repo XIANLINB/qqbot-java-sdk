@@ -25,12 +25,48 @@ public final class Events {
     private final Map<String, List<Consumer<? super Event>>> byType = new ConcurrentHashMap<>();
     private final Map<Class<?>, List<Consumer<? super Event>>> byClass = new ConcurrentHashMap<>();
     private final EventDeduplicator deduplicator = new EventDeduplicator();
+    /** 日志与事件来源标识，如 websocket/1905134745/落落 */
+    private volatile String botTag = "";
+    /** 是否打印原始报文（yml: xuanji.debug.raw-payload） */
+    private volatile boolean logRawPayload = false;
 
     /**
      * @param executor 事件回调线程池；null 表示调用线程同步执行
      */
     public Events(Executor executor) {
         this.executor = executor;
+    }
+
+    /**
+     * 设置机器人标识（方式/appId/名称），用于事件日志前缀。
+     *
+     * @param tag 如 websocket/1905134745/落落
+     */
+    public void setBotTag(String tag) {
+        this.botTag = tag == null ? "" : tag;
+    }
+
+    /**
+     * @return 当前机器人标识
+     */
+    public String botTag() {
+        return botTag;
+    }
+
+    /**
+     * 是否打印原始报文（WS 与 Webhook 统一在此输出）。
+     *
+     * @param enabled true 打印
+     */
+    public void setLogRawPayload(boolean enabled) {
+        this.logRawPayload = enabled;
+    }
+
+    /**
+     * @return 当前是否打印原始报文（OUT 侧 ApiCall 同步读取此开关）
+     */
+    public boolean logRawPayload() {
+        return logRawPayload;
     }
 
     /**
@@ -114,16 +150,146 @@ public final class Events {
      * @param envelopeId 信封 id（作为 event_id 被动回复）
      */
     public void dispatchEnvelope(String type, JsonNode d, String envelopeId) {
+        dispatchEnvelope(type, d, envelopeId, null);
+    }
+
+    /**
+     * 解析网关/Webhook 信封并分发（统一入口，WS 与 Webhook 都走这里）。
+     * <p>
+     * 日志格式：[IN][方式/appId/名称][事件中文名][群ID=..][成员ID=..][用户ID=..][消息ID=..][事件ID=..][类型=..][内容=..][原始报文=..]
+     * 原始报文受 {@code logRawPayload} 开关控制；READY/RESUMED 不附原始报文。
+     *
+     * @param type        事件名 t
+     * @param d           事件体 d
+     * @param envelopeId  信封 id（作为 event_id 被动回复）
+     * @param rawEnvelope 完整信封 JSON（可为 null）
+     */
+    public void dispatchEnvelope(String type, JsonNode d, String envelopeId, JsonNode rawEnvelope) {
+        boolean isSession = EventType.READY.equals(type) || EventType.RESUMED.equals(type);
+        String rawSuffix = "";
+        if (logRawPayload && rawEnvelope != null && !isSession) {
+            rawSuffix = " [原始报文=" + compact(rawEnvelope) + "]";
+        }
         Event event = parse(type, d, envelopeId);
+
+        String name = nameZh(type);
+        StringBuilder kv = new StringBuilder();
+        if (event != null) {
+            appendKv(kv, "群ID", event.groupOpenid());
+            appendKv(kv, "成员ID", event.memberOpenid());
+            appendKv(kv, "用户ID", event.userOpenid());
+            appendKv(kv, "消息ID", event.messageId());
+            if (envelopeId != null) {
+                appendKv(kv, "事件ID", envelopeId);
+            }
+        }
+
         if (event == null) {
+            if (name != null) {
+                // READY / RESUMED 等会话级
+                log.info("[IN][{}][{}]{}", botTag, name, rawSuffix);
+            } else if (isChannelEventType(type)) {
+                log.info("[IN][{}][频道事件-未实现:{}]{}", botTag, type, rawSuffix);
+            } else if (type != null) {
+                log.info("[IN][{}][未知事件:{}]{}", botTag, type, rawSuffix);
+            }
             return;
         }
         if (deduplicator.isDuplicate(event)) {
-            log.info("[xuanji] 丢弃重复事件 type={} msgId={} eventId={}",
-                    event.type(), event.messageId(), event.eventId());
+            log.info("[IN][{}][{}][重复丢弃]{}{}",
+                    botTag, name, kv, rawSuffix);
             return;
         }
+        log.info("[IN][{}][{}]{}{}{}", botTag, name, kv, typePreview(event), rawSuffix);
         dispatch(event);
+    }
+
+    /** 事件名 → 中文名。 */
+    private static String nameZh(String type) {
+        if (type == null) {
+            return null;
+        }
+        return switch (type) {
+            case EventType.READY -> "会话就绪";
+            case EventType.RESUMED -> "会话恢复";
+            case EventType.C2C_MESSAGE_CREATE -> "单聊消息";
+            case EventType.GROUP_AT_MESSAGE_CREATE -> "群聊艾特消息";
+            case EventType.GROUP_MESSAGE_CREATE -> "群聊全量消息";
+            case EventType.GROUP_ADD_ROBOT -> "机器人进群";
+            case EventType.GROUP_DEL_ROBOT -> "机器人退群";
+            case EventType.GROUP_MEMBER_ADD -> "群成员加入";
+            case EventType.GROUP_MEMBER_REMOVE -> "群成员移除";
+            case EventType.GROUP_MSG_RECEIVE -> "群推送开启";
+            case EventType.GROUP_MSG_REJECT -> "群推送关闭";
+            case EventType.FRIEND_ADD -> "添加好友";
+            case EventType.FRIEND_DEL -> "删除好友";
+            case EventType.C2C_MSG_RECEIVE -> "单聊推送开启";
+            case EventType.C2C_MSG_REJECT -> "单聊推送关闭";
+            case EventType.GROUP_JOIN_REQUEST -> "入群申请";
+            case EventType.SUBSCRIBE_MESSAGE_STATUS -> "订阅授权变更";
+            case EventType.INTERACTION_CREATE -> "互动事件";
+            default -> null;
+        };
+    }
+
+    /** 消息内容类型与预览，如 [文本][内容=你好]。 */
+    private static String typePreview(Event e) {
+        if (e instanceof C2cMessageCreate c) {
+            return messagePreview(c.messageType(), c.attachments(), c.content());
+        }
+        if (e instanceof GroupMessageCreate g) {
+            return messagePreview(g.messageType(), g.attachments(), g.content());
+        }
+        if (e instanceof GroupAtMessageCreate g) {
+            return messagePreview(g.messageType(), g.attachments(), g.content());
+        }
+        if (e instanceof InteractionCreate) {
+            return "[按钮/菜单]";
+        }
+        return "";
+    }
+
+    private static String messagePreview(Integer messageType,
+                                          java.util.List<com.xuanji.qqbot.model.message.MessageAttachment> attachments,
+                                          String content) {
+        String type = "文本";
+        if (attachments != null && !attachments.isEmpty()) {
+            var a = attachments.get(0);
+            type = a.isImage() ? "图片" : a.isVoice() ? "语音" : a.isVideo() ? "视频" : "文件";
+        } else if (messageType != null && messageType == 3) {
+            type = "卡片";
+        }
+        if (content == null || content.isBlank()) {
+            return "[" + type + "]";
+        }
+        String prev = content.length() > 50 ? content.substring(0, 50) + "…" : content;
+        return "[" + type + "][内容=" + prev.replace("\n", "\\n") + "]";
+    }
+
+    private static void appendKv(StringBuilder sb, String key, String value) {
+        if (value != null && !value.isBlank()) {
+            sb.append('[').append(key).append('=').append(value).append(']');
+        }
+    }
+
+    private static String compact(JsonNode node) {
+        try {
+            return Json.mapper().writeValueAsString(node);
+        } catch (Exception e) {
+            return String.valueOf(node);
+        }
+    }
+
+    private static boolean isChannelEventType(String type) {
+        if (type == null) {
+            return false;
+        }
+        return type.startsWith("GUILD")
+                || type.startsWith("CHANNEL")
+                || type.startsWith("AT_MESSAGE")
+                || type.startsWith("PUBLIC_MESSAGE")
+                || type.contains("FORUM")
+                || type.contains("REACTION");
     }
 
     /**
@@ -172,34 +338,13 @@ public final class Events {
                         Json.mapper().treeToValue(d, SubscribeMessageStatus.class), envelopeId, type);
                 case EventType.INTERACTION_CREATE -> withEnvelope(
                         Json.mapper().treeToValue(d, InteractionCreate.class), envelopeId, type);
-                default -> {
-                if (isChannelEventType(type)) {
-                    log.info("[xuanji] 频道相关事件（本期不实现）: {}", type);
-                } else {
-                    log.info("[xuanji] 未知事件类型: {}", type);
-                }
-                yield null;
-            }
+                default -> null;
             };
-            // default 分支已打日志
             return event;
         } catch (Exception e) {
             log.warn("解析事件 {} 失败: {}", type, e.getMessage());
             return null;
         }
-    }
-
-    private static boolean isChannelEventType(String type) {
-        if (type == null) {
-            return false;
-        }
-        return type.startsWith("GUILD")
-                || type.startsWith("CHANNEL")
-                || type.startsWith("AT_MESSAGE")
-                || type.startsWith("PUBLIC_MESSAGE")
-                || type.contains("GUILD_MEMBER")
-                || type.contains("FORUM")
-                || type.contains("REACTION");
     }
 
     private static Event withEnvelope(Event e, String envelopeId, String type) {

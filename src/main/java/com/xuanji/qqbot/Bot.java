@@ -70,15 +70,21 @@ public class Bot implements AutoCloseable {
         this.ownsTransport = ownsTransport;
         this.ownedExecutor = ownedExecutor;
         this.tokenSource = new TokenSource(transport, options);
-        this.apiCall = new ApiCall(transport, options.baseUri(), tokenSource::accessToken);
+        this.events = new Events(options.eventExecutor());
+        this.apiCall = new ApiCall(transport, options.baseUri(), tokenSource::accessToken,
+                events::botTag, events::logRawPayload);
+        // 富媒体上传走独立 transport：超时可单独配置（默认 60s/60s）
+        MediaSpec mediaSpec = options.media() == null ? MediaSpec.defaults() : options.media();
+        Transport mediaTransport = new Transport.JdkTransport(mediaSpec.connectTimeout(), mediaSpec.requestTimeout());
+        ApiCall mediaCall = new ApiCall(mediaTransport, options.baseUri(), tokenSource::accessToken,
+                events::botTag, events::logRawPayload);
         this.messageApi = new MessageApi(apiCall);
-        this.mediaApi = new MediaApi(apiCall);
+        this.mediaApi = new MediaApi(mediaCall, mediaSpec);
         this.groupAdminApi = new GroupAdminApi(apiCall);
         this.menuPanelApi = new MenuPanelApi(apiCall);
         this.joinApprovalApi = new JoinApprovalStrategyApi(apiCall);
         this.interactionApi = new com.xuanji.qqbot.api.InteractionApi(apiCall);
         this.gatewayApi = new GatewayApi(apiCall);
-        this.events = new Events(options.eventExecutor());
     }
 
     /**
@@ -910,19 +916,44 @@ public class Bot implements AutoCloseable {
     }
 
     /**
-     * 连接官方网关（自动重连）。
+     * 连接官方网关（自动重连），阻塞至就绪；失败抛异常。
      *
      * @param intents 事件位，见 {@link Intents}
      * @return 网关守护
      */
     public GatewaySupervisor connectGateway(long intents) {
+        return connectGateway(intents, true);
+    }
+
+    /**
+     * 连接官方网关（自动重连）。
+     *
+     * @param intents  事件位，见 {@link Intents}
+     * @param failFast true=就绪前阻塞，失败抛异常；false=失败转后台退避重试
+     * @return 网关守护
+     */
+    public GatewaySupervisor connectGateway(long intents, boolean failFast) {
         if (supervisor != null) {
             throw new IllegalStateException("网关已连接");
         }
-        GatewaySupervisor sup = new GatewaySupervisor(gatewayApi, tokenSource::accessToken, intents, events);
-        sup.startAndAwait();
+        GatewaySupervisor sup = new GatewaySupervisor(gatewayApi, tokenSource::accessToken, intents, events,
+                new int[]{0, 1}, "websocket/" + options.credentials().appId());
+        if (failFast) {
+            sup.startAndAwait();
+        } else {
+            sup.startBackground();
+        }
         this.supervisor = sup;
         return sup;
+    }
+
+    /**
+     * @return 当前 WebSocket 连接状态；未连接（含 webhook 接入）为 NOT_CONNECTED
+     */
+    public com.xuanji.qqbot.ws.ConnectState connectState() {
+        return supervisor == null
+                ? com.xuanji.qqbot.ws.ConnectState.NOT_CONNECTED
+                : supervisor.state();
     }
 
     // ==================== 进阶：分组 API ====================
@@ -1019,6 +1050,7 @@ public class Bot implements AutoCloseable {
         private QqBotOptions options;
         private Transport transport;
         private Executor eventExecutor;
+        private MediaSpec media;
 
         /**
          * @param appId AppID
@@ -1035,6 +1067,15 @@ public class Bot implements AutoCloseable {
          */
         public Builder appSecret(String appSecret) {
             this.appSecret = appSecret;
+            return this;
+        }
+
+        /**
+         * @param media 富媒体上传配置（超时/重试），null 用默认
+         * @return this
+         */
+        public Builder media(MediaSpec media) {
+            this.media = media;
             return this;
         }
 
@@ -1076,7 +1117,7 @@ public class Bot implements AutoCloseable {
                 }
                 opts = QqBotOptions.defaults(new com.xuanji.qqbot.auth.Credentials(appId, appSecret));
             }
-            if (eventExecutor != null) {
+            if (eventExecutor != null || this.media != null) {
                 opts = new QqBotOptions(
                         opts.credentials(),
                         opts.baseUri(),
@@ -1084,7 +1125,8 @@ public class Bot implements AutoCloseable {
                         opts.requestTimeout(),
                         opts.tokenRefreshMargin(),
                         eventExecutor,
-                        opts.sandbox()
+                        opts.sandbox(),
+                        this.media != null ? this.media : opts.media()
                 );
             }
             Transport t = transport;

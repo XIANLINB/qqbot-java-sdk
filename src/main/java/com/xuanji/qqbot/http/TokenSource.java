@@ -46,6 +46,9 @@ public final class TokenSource {
 
     /**
      * 获取当前可用 access_token（必要时自动刷新）。
+     * <p>
+     * 刷新失败且旧 token 尚未真正过期时继续使用旧 token（margin 只影响提前刷新窗口），
+     * 下次调用再尝试刷新，避免平台瞬时抖动导致请求全挂。
      *
      * @return 裸 token 字符串
      */
@@ -61,8 +64,16 @@ public final class TokenSource {
             if (current != null && current.isUsable(now, margin.toSeconds())) {
                 return current.token();
             }
-            cached = fetch();
-            return cached.token();
+            try {
+                cached = fetch();
+                return cached.token();
+            } catch (RuntimeException e) {
+                // 刷新失败：旧 token 还在真实有效期内则兜底续用
+                if (current != null && current.isUsable(now, 0)) {
+                    return current.token();
+                }
+                throw e;
+            }
         }
     }
 
