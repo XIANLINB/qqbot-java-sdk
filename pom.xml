@@ -6,7 +6,7 @@
 
     <groupId>io.github.xianlinb</groupId>
     <artifactId>qqbot-java-sdk</artifactId>
-    <version>1.0.0</version>
+    <version>1.0.1</version>
     <packaging>jar</packaging>
     <name>qqbot-java-sdk</name>
     <description>Lightweight Java SDK for QQ Bot OpenAPI (api-v2): WebSocket/Webhook events, C2C and group messages, rich media, group admin, menu/panel, with optional Spring Boot auto-configuration</description>
