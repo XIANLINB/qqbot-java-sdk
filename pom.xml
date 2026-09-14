@@ -180,6 +180,8 @@
                 <artifactId>maven-gpg-plugin</artifactId>
                 <version>3.2.7</version>
                 <configuration>
+                    <!-- 指定用于签名的 GPG 密钥（长 key id） -->
+                    <keyname>4bbb889145f24861b7c90e83</keyname>
                     <gpgArguments>
                         <arg>--pinentry-mode</arg>
                         <arg>loopback</arg>
