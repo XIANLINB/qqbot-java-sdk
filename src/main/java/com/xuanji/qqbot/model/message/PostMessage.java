@@ -152,4 +152,28 @@ public record PostMessage(
                 msgId, eventId, msgSeq, media, MessageReference.of(messageId),
                 isWakeup, inputNotify, ark, card);
     }
+
+    /**
+     * 设置互动召回标记（is_wakeup）。
+     *
+     * @param wakeup true 表示主动发送时召回用户（拉起会话）
+     * @return 新消息体
+     */
+    public PostMessage withWakeup(boolean wakeup) {
+        return new PostMessage(msgType, content, markdown, keyboard,
+                msgId, eventId, msgSeq, media, messageReference,
+                wakeup, inputNotify, ark, card);
+    }
+
+    /**
+     * 主动发送单聊互动召回文本（is_wakeup=true）。
+     * <p>
+     * 字段→槽位的映射收口在此工厂一处，调用方无需关心 {@code PostMessage} 的字段顺序。
+     *
+     * @param content 文本
+     * @return 消息体
+     */
+    public static PostMessage wakeupText(String content) {
+        return text(content).withWakeup(true);
+    }
 }

@@ -9,7 +9,7 @@ import java.time.Instant;
  * 过期前约 60 秒可换新 token，旧 token 在窗口内仍可用。
  */
 public record AccessToken(
-        /** 凭证字符串（调用 OpenAPI 时拼为 Authorization: Bot {token}） */
+        /** 凭证字符串（调用 OpenAPI 时拼为 Authorization: QQBot {token}） */
         String token,
         /** 绝对过期时刻 */
         Instant expiresAt

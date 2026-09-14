@@ -17,6 +17,7 @@ import com.xuanji.qqbot.model.media.FileInfo;
 import com.xuanji.qqbot.model.media.FileType;
 import com.xuanji.qqbot.model.media.Scope;
 import com.xuanji.qqbot.ws.GatewaySupervisor;
+import com.xuanji.qqbot.ws.ConnectListener;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -414,9 +415,7 @@ public class Bot implements AutoCloseable {
      * @return 发送结果
      */
     public MessageIdResult wakeupMsgC2c(String userOpenid, String content) {
-        return messageApi.postC2c(userOpenid, new PostMessage(
-                MsgType.TEXT.code(), content, null, null,
-                null, null, null, null, null, Boolean.TRUE, null, null, null));
+        return messageApi.postC2c(userOpenid, PostMessage.wakeupText(content));
     }
 
     /**
@@ -933,11 +932,35 @@ public class Bot implements AutoCloseable {
      * @return 网关守护
      */
     public GatewaySupervisor connectGateway(long intents, boolean failFast) {
+        return connectGateway(intents, failFast, options.shard());
+    }
+
+    /**
+     * 连接官方网关（自动重连），使用指定分片。
+     *
+     * @param intents 事件位，见 {@link Intents}
+     * @param shard  WebSocket 分片 [index, num]，如 [0,1]（单分片）或 [n, N]（多分片）
+     * @return 网关守护
+     */
+    public GatewaySupervisor connectGateway(long intents, int[] shard) {
+        return connectGateway(intents, true, shard);
+    }
+
+    /**
+     * 连接官方网关（自动重连）。
+     *
+     * @param intents   事件位，见 {@link Intents}
+     * @param failFast  true=就绪前阻塞，失败抛异常；false=失败转后台退避重试
+     * @param shard     WebSocket 分片 [index, num]，如 [0,1]（单分片）或 [n, N]（多分片）
+     * @return 网关守护
+     */
+    public GatewaySupervisor connectGateway(long intents, boolean failFast, int[] shard) {
         if (supervisor != null) {
             throw new IllegalStateException("网关已连接");
         }
+        int[] effectiveShard = shard == null || shard.length != 2 ? new int[]{0, 1} : shard;
         GatewaySupervisor sup = new GatewaySupervisor(gatewayApi, tokenSource::accessToken, intents, events,
-                new int[]{0, 1}, "websocket/" + options.credentials().appId());
+                effectiveShard, "websocket/" + options.credentials().appId(), options.connectListener());
         if (failFast) {
             sup.startAndAwait();
         } else {
@@ -1051,6 +1074,7 @@ public class Bot implements AutoCloseable {
         private Transport transport;
         private Executor eventExecutor;
         private MediaSpec media;
+        private ConnectListener connectListener;
 
         /**
          * @param appId AppID
@@ -1107,6 +1131,15 @@ public class Bot implements AutoCloseable {
         }
 
         /**
+         * @param connectListener WebSocket 连接生命周期监听（见 {@link ConnectListener}）
+         * @return this
+         */
+        public Builder connectListener(ConnectListener connectListener) {
+            this.connectListener = connectListener;
+            return this;
+        }
+
+        /**
          * @return Bot
          */
         public Bot build() {
@@ -1117,18 +1150,19 @@ public class Bot implements AutoCloseable {
                 }
                 opts = QqBotOptions.defaults(new com.xuanji.qqbot.auth.Credentials(appId, appSecret));
             }
-            if (eventExecutor != null || this.media != null) {
-                opts = new QqBotOptions(
-                        opts.credentials(),
-                        opts.baseUri(),
-                        opts.connectTimeout(),
-                        opts.requestTimeout(),
-                        opts.tokenRefreshMargin(),
-                        eventExecutor,
-                        opts.sandbox(),
-                        this.media != null ? this.media : opts.media()
-                );
-            }
+        if (eventExecutor != null || this.media != null || this.connectListener != null) {
+            opts = new QqBotOptions(
+                    opts.credentials(),
+                    opts.baseUri(),
+                    opts.connectTimeout(),
+                    opts.requestTimeout(),
+                    opts.tokenRefreshMargin(),
+                    eventExecutor,
+                    opts.shard(),
+                    this.media != null ? this.media : opts.media(),
+                    this.connectListener != null ? this.connectListener : opts.connectListener()
+            );
+        }
             Transport t = transport;
             boolean own = false;
             if (t == null) {

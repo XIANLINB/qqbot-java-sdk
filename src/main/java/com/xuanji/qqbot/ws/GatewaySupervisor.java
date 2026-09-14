@@ -38,6 +38,8 @@ public final class GatewaySupervisor implements AutoCloseable {
     private final int[] shard;
     /** 日志标识基底：websocket/appId */
     private final String botTagBase;
+    /** 连接生命周期监听；null 表示不监听 */
+    private final ConnectListener connectListener;
 
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final AtomicBoolean stopped = new AtomicBoolean(false);
@@ -56,7 +58,7 @@ public final class GatewaySupervisor implements AutoCloseable {
      * @param events 事件总线
      */
     public GatewaySupervisor(GatewayApi gatewayApi, String accessToken, long intents, Events events) {
-        this(gatewayApi, () -> accessToken, intents, events, new int[]{0, 1}, "websocket");
+        this(gatewayApi, () -> accessToken, intents, events, new int[]{0, 1}, "websocket", null);
     }
 
     /**
@@ -67,7 +69,7 @@ public final class GatewaySupervisor implements AutoCloseable {
      */
     public GatewaySupervisor(GatewayApi gatewayApi, Supplier<String> tokenSupplier,
                              long intents, Events events) {
-        this(gatewayApi, tokenSupplier, intents, events, new int[]{0, 1}, "websocket");
+        this(gatewayApi, tokenSupplier, intents, events, new int[]{0, 1}, "websocket", null);
     }
 
     /**
@@ -79,13 +81,15 @@ public final class GatewaySupervisor implements AutoCloseable {
      * @param botTagBase 日志标识基底（websocket/appId）
      */
     public GatewaySupervisor(GatewayApi gatewayApi, Supplier<String> tokenSupplier,
-                             long intents, Events events, int[] shard, String botTagBase) {
+                             long intents, Events events, int[] shard, String botTagBase,
+                             ConnectListener connectListener) {
         this.gatewayApi = gatewayApi;
         this.tokenSupplier = tokenSupplier;
         this.intents = intents;
         this.events = events;
         this.shard = shard;
         this.botTagBase = botTagBase;
+        this.connectListener = connectListener;
         this.reconnectScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "Bot-ws-reconnect-timer");
             t.setDaemon(true);
@@ -180,6 +184,9 @@ public final class GatewaySupervisor implements AutoCloseable {
             attempt.set(0);
             log.info("[{}] 网关就绪 session={} seq={} fresh={}",
                     botTagBase, r.sessionId(), r.seq(), r.fresh());
+            if (connectListener != null) {
+                connectListener.onConnected(r.sessionId());
+            }
             return true;
         } catch (Exception e) {
             log.warn("[{}] 网关就绪失败: {}", botTagBase, e.getMessage());
@@ -210,6 +217,9 @@ public final class GatewaySupervisor implements AutoCloseable {
         if (closed.get()) {
             return;
         }
+        if (connectListener != null) {
+            connectListener.onDisconnected(d.reason(), d.closeCode());
+        }
         Action action = decide(d.closeCode());
         if (action == Action.STOP) {
             stopped.set(true);
@@ -237,6 +247,9 @@ public final class GatewaySupervisor implements AutoCloseable {
             return;
         }
         int n = attempt.incrementAndGet();
+        if (connectListener != null) {
+            connectListener.onReconnecting(n);
+        }
         long delayMs = backoffMs(n);
         log.info("[{}] 将在 {}ms 后重连（第 {} 次）", botTagBase, delayMs, n);
         pendingReconnect = reconnectScheduler.schedule(

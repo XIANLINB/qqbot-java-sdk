@@ -54,7 +54,8 @@ class TokenSourceTest {
                 java.time.Duration.ofSeconds(5),
                 java.time.Duration.ofSeconds(10000),
                 null,
-                false,
+                new int[]{0, 1},
+                null,
                 null
         );
         TokenSource src = new TokenSource(t, opts);

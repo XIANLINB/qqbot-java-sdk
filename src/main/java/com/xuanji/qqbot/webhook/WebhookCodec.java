@@ -21,6 +21,11 @@ import java.util.Map;
 public final class WebhookCodec {
     private final String appSecret;
 
+    /**
+     * 回调时间戳容差：请求时间与当前时间相差超过 ±10 分钟即视为过期/重放，直接拒绝。
+     */
+    private static final long TIMESTAMP_TOLERANCE_SECONDS = 600;
+
     private WebhookCodec(String appSecret) {
         this.appSecret = appSecret;
     }
@@ -73,6 +78,16 @@ public final class WebhookCodec {
      */
     public boolean verify(String signatureHex, String timestamp, byte[] rawBody) {
         if (signatureHex == null || signatureHex.isBlank() || timestamp == null || rawBody == null) {
+            return false;
+        }
+        long ts;
+        try {
+            ts = Long.parseLong(timestamp.trim());
+        } catch (NumberFormatException e) {
+            return false;
+        }
+        long now = System.currentTimeMillis() / 1000L;
+        if (Math.abs(now - ts) > TIMESTAMP_TOLERANCE_SECONDS) {
             return false;
         }
         byte[] sig;

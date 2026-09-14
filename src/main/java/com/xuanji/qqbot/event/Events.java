@@ -5,6 +5,8 @@ import com.xuanji.qqbot.json.Json;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.lang.reflect.Constructor;
+import java.lang.reflect.RecordComponent;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -347,68 +349,55 @@ public final class Events {
         }
     }
 
+    /**
+     * 将「为每种事件注入信封 id」的重复 copy 构造收敛到一处。
+     * <p>
+     * 每个事件 record 都以 {@code @JsonIgnore String eventEnvelopeId} 作为信封字段，
+     * 这里用 record 反射复制出一份、仅替换该字段，新增事件类型时无需再补 copy 分支；
+     * 传入 null 信封、或非 record、或不带信封字段的事件，均原样返回。
+     * 返回对象仍是原具体类型，订阅侧 {@code on(Class<T>)} 的公开 API 不受影响。
+     *
+     * @param e          已反序列化的事件
+     * @param envelopeId 信封 id（作为 event_id 被动回复）
+     * @param type       事件名（仅用于日志）
+     * @return 注入信封后的事件
+     */
     private static Event withEnvelope(Event e, String envelopeId, String type) {
-        if (e instanceof C2cMessageCreate c2c) {
-            return new C2cMessageCreate(c2c.id(), c2c.author(), c2c.content(), c2c.timestamp(),
-                    c2c.messageType(), c2c.messageScene(), c2c.attachments(), c2c.arkData(),
-                    c2c.msgElements(), envelopeId);
+        if (e == null || envelopeId == null) {
+            return e;
         }
-        if (e instanceof GroupAtMessageCreate g) {
-            return new GroupAtMessageCreate(g.id(), g.author(), g.content(), g.groupId(),
-                    g.groupOpenid(), g.timestamp(), g.messageType(), g.messageScene(), g.attachments(),
-                    g.mentions(), g.arkData(), g.msgElements(), envelopeId);
+        Class<?> clazz = e.getClass();
+        if (!clazz.isRecord()) {
+            return e;
         }
-        if (e instanceof GroupMessageCreate g) {
-            return new GroupMessageCreate(g.id(), g.author(), g.content(), g.groupId(),
-                    g.groupOpenid(), g.timestamp(), g.messageType(), g.messageScene(), g.attachments(),
-                    g.mentions(), g.arkData(), g.msgElements(), envelopeId);
+        RecordComponent[] comps = clazz.getRecordComponents();
+        int idx = -1;
+        for (int i = 0; i < comps.length; i++) {
+            if ("eventEnvelopeId".equals(comps[i].getName())) {
+                idx = i;
+                break;
+            }
         }
-        if (e instanceof InteractionCreate i) {
-            return new InteractionCreate(i.id(), i.interactionType(), i.scene(), i.chatType(),
-                    i.timestamp(), i.guildId(), i.channelId(), i.userOpenid(),
-                    i.groupOpenid(), i.groupMemberOpenid(), i.data(), i.version(),
-                    i.applicationId(), envelopeId);
+        if (idx < 0) {
+            return e;
         }
-        if (e instanceof GroupAddRobot g) {
-            return new GroupAddRobot(g.groupOpenid(), g.groupId(), g.opMemberOpenid(), g.timestamp(), envelopeId);
+        Object[] args = new Object[comps.length];
+        try {
+            for (int i = 0; i < comps.length; i++) {
+                args[i] = comps[i].getAccessor().invoke(e);
+            }
+            args[idx] = envelopeId;
+            Class<?>[] types = new Class[comps.length];
+            for (int i = 0; i < comps.length; i++) {
+                types[i] = comps[i].getType();
+            }
+            Constructor<?> ctor = clazz.getDeclaredConstructor(types);
+            ctor.setAccessible(true);
+            return (Event) ctor.newInstance(args);
+        } catch (ReflectiveOperationException ex) {
+            log.warn("事件 {} 注入信封失败，按原样分发: {}", type, ex.getMessage());
+            return e;
         }
-        if (e instanceof GroupDelRobot g) {
-            return new GroupDelRobot(g.groupOpenid(), g.groupId(), g.opMemberOpenid(), g.timestamp(), envelopeId);
-        }
-        if (e instanceof FriendAdd f) {
-            return new FriendAdd(f.openid(), f.timestamp(), f.author(), envelopeId);
-        }
-        if (e instanceof FriendDel f) {
-            return new FriendDel(f.openid(), f.timestamp(), f.author(), envelopeId);
-        }
-        if (e instanceof C2cMsgReject c) {
-            return new C2cMsgReject(c.id(), c.author(), c.timestamp(), envelopeId);
-        }
-        if (e instanceof C2cMsgReceive c) {
-            return new C2cMsgReceive(c.id(), c.author(), c.timestamp(), envelopeId);
-        }
-        if (e instanceof GroupMsgReject g) {
-            return new GroupMsgReject(g.id(), g.groupId(), g.groupOpenid(), g.author(), g.timestamp(), envelopeId);
-        }
-        if (e instanceof GroupMsgReceive g) {
-            return new GroupMsgReceive(g.id(), g.groupId(), g.groupOpenid(), g.author(), g.timestamp(), envelopeId);
-        }
-        if (e instanceof GroupMemberAdd g) {
-            return new GroupMemberAdd(g.groupOpenid(), g.memberOpenid(), g.timestamp(), envelopeId);
-        }
-        if (e instanceof GroupMemberRemove g) {
-            return new GroupMemberRemove(g.groupOpenid(), g.memberOpenid(), g.timestamp(), envelopeId);
-        }
-        if (e instanceof GroupJoinRequest g) {
-            return new GroupJoinRequest(g.applyAt(), g.applySource(), g.groupOpenid(),
-                    g.joinRequestId(), g.memberOpenid(), g.username(), g.verifyInfo(),
-                    g.invitedBy(), g.autoApproved(), g.bot(), envelopeId);
-        }
-        if (e instanceof SubscribeMessageStatus s) {
-            return new SubscribeMessageStatus(s.id(), s.status(), s.groupId(), s.groupOpenid(),
-                    s.author(), s.timestamp(), s.data(), envelopeId);
-        }
-        return e;
     }
 
     private static void runSafely(Consumer<? super Event> c, Event event) {

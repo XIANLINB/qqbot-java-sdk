@@ -1,6 +1,7 @@
 package com.xuanji.qqbot;
 
 import com.xuanji.qqbot.auth.Credentials;
+import com.xuanji.qqbot.ws.ConnectListener;
 
 import java.net.URI;
 import java.time.Duration;
@@ -26,10 +27,12 @@ public record QqBotOptions(
         Duration tokenRefreshMargin,
         /** 事件回调执行器；null 表示在 WS/Webhook 收线程上直接执行 */
         Executor eventExecutor,
-        /** 是否使用沙箱环境（预留，当前路径未切换） */
-        boolean sandbox,
+        /** WebSocket 分片 [index, num]，默认单分片 [0,1]；多分片机器人传入 [n, N] */
+        int[] shard,
         /** 富媒体上传配置（超时/重试）；null 表示使用 {@link MediaSpec#defaults()} */
-        MediaSpec media
+        MediaSpec media,
+        /** WebSocket 连接生命周期监听（见 {@link ConnectListener}）；null 表示不监听 */
+        ConnectListener connectListener
 ) {
     /** 官方 OpenAPI 默认域名 */
     public static final URI DEFAULT_BASE_URI = URI.create("https://api.bot.qq.com");
@@ -40,6 +43,9 @@ public record QqBotOptions(
         Objects.requireNonNull(connectTimeout, "connectTimeout 不可为空");
         Objects.requireNonNull(requestTimeout, "requestTimeout 不可为空");
         Objects.requireNonNull(tokenRefreshMargin, "tokenRefreshMargin 不可为空");
+        if (shard == null) {
+            shard = new int[]{0, 1};
+        }
     }
 
     /**
@@ -56,8 +62,9 @@ public record QqBotOptions(
                 Duration.ofSeconds(30),
                 Duration.ofSeconds(90),
                 null,
-                false,
-                MediaSpec.defaults()
+                new int[]{0, 1},
+                MediaSpec.defaults(),
+                null
         );
     }
 }
